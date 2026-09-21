@@ -1,0 +1,34 @@
+name: heartbeat
+
+# 公开仓库里若 60 天没有任何仓库活动，GitHub 会自动停用所有定时工作流
+# （见 GitHub 文档 events-that-trigger-workflows 的 schedule 说明）。
+# 本工作流每天提交一个日期文件，制造一次活动，保证 keep-alive 不会被自动停用。
+
+on:
+  schedule:
+    - cron: '37 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 提交今日心跳
+        run: |
+          today=$(date -u +%F)
+          if [ -f heartbeat.txt ] && [ "$(cat heartbeat.txt)" = "$today" ]; then
+            echo "今天已记录：$today（手动重复触发时属正常）"
+            exit 0
+          fi
+          echo "$today" > heartbeat.txt
+          git config user.name 'keepalive-bot'
+          git config user.email 'keepalive-bot@users.noreply.github.com'
+          git add heartbeat.txt
+          git commit -m "heartbeat: $today"
+          git push

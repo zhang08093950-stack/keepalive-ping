@@ -1,0 +1,51 @@
+name: keep-alive
+
+# 目的：让线上业务看板实例保持唤醒。
+# Render 免费实例闲置约 15 分钟会休眠，下次访问要等 30–60 秒冷启动；
+# 每 5 分钟探测一次可让它一直醒着。
+#
+# 为什么这个工作流单独放在公开仓库里：
+# GitHub Actions 对公开仓库的标准 runner 免费不限量，对私有仓库只给 2,000 分钟/月。
+# 保活是常年占用，放进私有数据仓库会按分钟计费，几天就会超出额度。
+#
+# 目标地址来自仓库 Secret `KEEPALIVE_URL`，不写进公开文件；Actions 日志里只打印状态码，
+# 不打印地址，避免把线上入口暴露给扫描者。
+
+on:
+  schedule:
+    # 每 5 分钟一次，并跳过整点 :00 —— GitHub 在整点负载最高，cron 可能被延迟甚至丢弃。
+    - cron: '2-57/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: 唤醒并探测
+        env:
+          TARGET: ${{ secrets.KEEPALIVE_URL }}
+        run: |
+          if [ -z "$TARGET" ]; then
+            echo "缺少 KEEPALIVE_URL secret，跳过" >&2
+            exit 0
+          fi
+
+          # 每次运行探测两次，间隔 4 分钟，跨越 5 分钟调度周期：
+          # 即使下一次调度被 GitHub 延迟，本轮第二次探测仍能让实例不进入休眠。
+          for i in 1 2; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 110 "$TARGET" 2>/dev/null || echo 000)
+            printf '[%s] ping %d -> HTTP %s\n' "$(date -u '+%H:%M:%S')" "$i" "$code"
+            if [ "$i" -lt 2 ]; then sleep 240; fi
+          done
+
+          # 故意不因探测失败让工作流失败：
+          # 保活失败没有可执行的补救动作，失败只会产生告警邮件噪音；下一次调度会重试。
+          echo "本轮结束"
